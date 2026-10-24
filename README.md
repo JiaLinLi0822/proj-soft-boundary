@@ -1,13 +1,65 @@
-# Soft Boundary
+# Stochastic Decision Policy Is Optimal Under Costly Control
 
-Code for studying soft decision boundaries in sequential evidence accumulation.
-The project compares ideal observers, stochastic action selection (execution
-noise), and noisy internal evidence (representation noise), and fits small GRU
-policies to monkey choices. 
+[![bioRxiv](https://img.shields.io/badge/bioRxiv-10.64898%2F2026.10.06.757200-red)](https://www.biorxiv.org/content/10.64898/2026.10.06.757200v1.abstract)
 
-## Setup
+**Authors: Jialin Li, Kenway Louie, Aadith Vittala, Marcelo G. Mattar, Paul Glimcher, Bo Shen**
 
-Use Python 3.10 or later. From this folder:
+## Contents
+
+- [Overview](#overview)
+- [Repo Contents](#repo-contents)
+- [System Requirements](#system-requirements)
+- [Installation](#installation)
+- [Reproduce the Analyses and Figures](#reproduce-the-analyses-and-figures)
+- [Citation](#citation)
+
+## Overview
+
+This repository contains the modeling and analysis code accompanying the
+[preprint](https://www.biorxiv.org/content/10.64898/2026.10.06.757200v1.abstract)
+*Stochastic Decision Policy Is Optimal Under Costly Control*.
+
+The project studies how the cost of controlling action selection can make
+stochastic decision policies optimal in sequential evidence accumulation. It
+compares soft policies with noisy internal beliefs and fits small recurrent
+neural networks (GRUs) to macaque choices to characterize sampling policies
+and hidden-state variability.
+
+## Repo Contents
+
+- [Normative models](./normative/): Dynamic programming, simulations, and scripts
+  for Figures 1–4. See the [normative README](./normative/README.md) for commands,
+  model settings, and output files.
+- [Experimental analyses](./experiment/): Monkey-data loading, GRU fitting,
+  nested cross-validation, and behavioral, policy, and representation analyses
+  associated with Figures 5–8. See the [experiment README](./experiment/README.md)
+  for data requirements, training, and figure-generation instructions.
+- [Dependencies](./requirements.txt): Python packages used by both workflows.
+  [requirements-lock.txt](./requirements-lock.txt) records exact package versions.
+
+Original monkey data and fitted checkpoints are not included. The normative
+figures can be generated without external data.
+
+## System Requirements
+
+### Hardware and Software Requirements
+
+Use Python 3.10 or later with NumPy, SciPy, pandas, Matplotlib, PyTorch, h5py,
+statsmodels, and tqdm. A standard CPU computer can run the normative figures
+and individual GRU fits. Nested cross-validation involves many fits; a multicore
+machine or computing cluster is useful for the full sweep. GPU execution is
+optional.
+
+### OS Requirements
+
+The scripts use Python packages available on macOS, Linux, and Windows. Setup
+commands below use a macOS/Linux shell. On Windows, activate the environment
+with `.venv\Scripts\Activate.ps1` in PowerShell. The Slurm example requires a
+Linux cluster with Slurm and local configuration.
+
+## Installation
+
+From the repository root:
 
 ```bash
 python3 -m venv .venv
@@ -15,101 +67,24 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt` includes the numerical, plotting, PyTorch, HDF5, and statistical
-packages used by both workflows. For a headless machine, set `MPLBACKEND=Agg`.
-The notebooks additionally require Jupyter; the commands below use Python scripts.
+To install the recorded exact versions on a compatible platform, use
+`python -m pip install -r requirements-lock.txt` instead. Jupyter is needed only
+for the optional notebooks. On a headless machine, set `MPLBACKEND=Agg`.
 
-`requirements-lock.txt` records exact dependency versions. To install those
-versions on a compatible platform, use
-`python -m pip install -r requirements-lock.txt`.
+## Reproduce the Analyses and Figures
 
-## Reproduce Figures 1–4
+After installation, follow the instructions in each subfolder:
 
-Run from the project root with the environment activated:
+1. [Figures 1–4: normative models](./normative/README.md).
+2. [GRU fitting and nested cross-validation](./experiment/README.md#fit-the-gru-models).
+3. [Experimental analyses and figure outputs](./experiment/README.md#reproduce-the-experimental-analyses-and-figures).
 
-```bash
-python normative/fig1.py
-python normative/fig2.py
-python normative/fig3.py
-python normative/fig4.py
-```
+Commands in both subfolder READMEs are run from the **repository root**.
 
-Each script writes `normative/figN.png` and `normative/figN.svg`, replacing any
-existing files with those names. No external data or GPU is needed. Keep the
-constants in the scripts unchanged to use the supplied figure settings.
+## Citation
 
-| Figure | Content | Main settings |
-| --- | --- | --- |
-| 1 | Task, action values, and deterministic versus soft policies and trial distributions. | Sampling cost `0.04`, temperature `0.04`, 50,000 trials per observer, seed `1`. |
-| 2 | Policy softening and the KL cost-of-control tradeoff. Uses its own grid-aligned value solver. | Cost `0.04`, example temperatures in `LEVEL_T`, KL weight `0.12`. |
-| 3 | Hard internal boundaries appearing soft in ground-truth evidence coordinates under representation noise. | Cost `0.04`, per-step noise SD `0.25`, 50,000 trials, seed `1`. |
-| 4 | Sampling policies for ideal, soft, noisy-belief, and mixed observers with and without a deadline. | Cost `0.004`, noise SD `0.30`, temperature `0.010`, 10 plotted steps; analytical curves. |
+If you use this code, please cite:
 
-For other noise/horizon combinations, for example:
-
-```bash
-python normative/noise_model_runner.py \
-  --noise mixed --horizon finite --n-trials 1000 \
-  --n-gh 81 --no-show --save-dir normative/figures
-```
-
-This produces diagnostic SVGs in the requested directory. It does not assemble
-one of the four numbered figures. The default high-resolution noisy models can
-be slower than the deterministic models.
-
-## Fitt RNN to Monkey data
-
-We used the monkey data from Kira-lab MATLAB v7.3/HDF5 files `dataE.mat` (Eli, `--monkey-id 1`) and `dataJ.mat` (Joey,`--monkey-id 2`). The loader expects an `info/TM` matrix in MATLAB storage orientation; columns of its transpose contain choices, timing, and shape IDs (see `dataset.py`). Ordinary pre-v7.3 MAT files are not supported. Please note that **original data and fitted checkpoints are not included.**
-
-Always pass `--mat` explicitly. Without it, the scripts look for the legacy path
-`neuralSPRT/data/dataE.mat` or `dataJ.mat` under the project root. From the root, for example,
-train a two-unit model:
-
-```bash
-python experiment/train_single.py \
-  --mat /path/to/dataE.mat --monkey-id 1 --hidden 2 \
-  --epochs 500 --lr 1e-3 --batch-size 128 --val-frac 0.2 \
-  --seed 30 --device cpu --recurrent-l1-lambda 1e-5 \
-  --outdir experiment/runs/single
-
-```
-
-To run the full nested cross validation, run
-
-```bash
-python experiment/train_nested_cv.py \
-  --mat /path/to/dataE.mat --monkey-id 1 \
-  --hidden 1 2 3 4 5 10 20 --recurrent-l1-lambda 1e-5 \
-  --init-seeds 0 1 2 --outer-folds 5 --inner-epochs 1000 \
-  --batch-size 128 --lr 3e-3 --seed 0 --device cpu \
-  --num-workers 0 --outdir experiment/runs/nested_cv
-```
-
-Each hidden size is evaluated separately; inner folds select L1 and initialization
-seed, then the selected configuration is refitted on all outer-training trials.
-Outputs include inner/outer checkpoints, CSV summaries, and
-`test_trajectory_nll_vs_hidden.{png,svg}`. Increasing `--num-workers` above 1
-parallelizes inner fits; use CPU for this mode.
-
-This will take longer time if you run this script locally. We recommend you to run the nested CV on the cluster using `train_nested_cv.sbatch`.
-
-## Reproduce experiment analyses
-
-To reproduce the Fig.5-8, run
-
-```python
-# Replace the checkpoint path below with the model.pt printed by training.
-python experiment/analysis.py \
-  --mat /path/to/dataE.mat --monkey-id 1 \
-  --ckpt experiment/runs/single/MonkeyE/RUN_DIRECTORY/model.pt \
-  --n-trials 10000 --rollout-seed 45 --device cpu \
-  --outdir experiment/results
-```
-
-Training writes a checkpoint and loss curve for each hidden size. Analysis writes
-PNG/SVG pairs and `analysis_summary.json` under `experiment/results/Monkey E/`
-(or `Monkey J/`): behavior (`behavior`, `behavior2`), decision thresholds,
-`psample`, `psample_scatter`, `psample_variability`, hidden-state plots, and
-representation-noise plots. Two-dimensional hidden-state plots require at least
-two hidden units and are skipped for a one-unit model. Use separate `--outdir`
-values to retain analyses of multiple checkpoints. Load only trusted `.pt` files.
+Li, J., Louie, K., Vittala, A., Mattar, M. G., Glimcher, P., & Shen, B. (2026).
+*Stochastic Decision Policy Is Optimal Under Costly Control*. bioRxiv.
+[https://doi.org/10.64898/2026.10.06.757200](https://doi.org/10.64898/2026.10.06.757200).
