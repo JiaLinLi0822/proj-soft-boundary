@@ -120,7 +120,7 @@ def evaluate(model: TinyGRUPolicy, loader: DataLoader, device: torch.device) -> 
 class Trainer:
     """Train an externally constructed model and DataLoaders."""
 
-    def __init__(self, model: TinyGRUPolicy, train_loader: DataLoader, val_loader: Optional[DataLoader], device: torch.device, config: TrainConfig, train_eval_loader: Optional[DataLoader] = None):
+    def __init__(self, model: TinyGRUPolicy, train_loader: DataLoader, val_loader: DataLoader, device: torch.device, config: TrainConfig, train_eval_loader: Optional[DataLoader] = None):
         
         self.model = model
         self.train_loader = train_loader
@@ -185,13 +185,6 @@ class Trainer:
             epochs_trained = int(epoch)
             epoch_train_loss = self._epoch_train()
 
-            # Final nested-CV refits use all outer-training data for a fixed
-            # number of epochs, so there is deliberately no validation pass.
-            if self.val_loader is None:
-                if self.cfg.show_progress:
-                    epoch_iter.set_postfix(refresh=False, train_loss=f"{epoch_train_loss:.4f}")
-                continue
-
             val_metrics = evaluate(self.model, self.val_loader, self.device)
 
             if self.cfg.record_history:
@@ -231,20 +224,6 @@ class Trainer:
             ):
                 stopped_early = True
                 break
-
-        if self.val_loader is None:
-            return {
-                "model": self.model,
-                "device": str(self.device),
-                "best_epoch": int(epochs_trained),
-                "best_val_loss": None,
-                "best_val_final_acc": None,
-                "epochs_trained": int(epochs_trained),
-                "stopped_early": False,
-                "final_train": evaluate(self.model, self.train_eval_loader, self.device),
-                "final_val": None,
-                "history": history,
-            }
 
         if best["state_dict"] is not None:
             self.model.load_state_dict(best["state_dict"])

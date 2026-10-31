@@ -21,7 +21,7 @@ def main():
     parser.add_argument("--monkey-id", type=int, choices=[1, 2], default=2)
     parser.add_argument("--hidden", type=int, nargs="+", default=[2])
     parser.add_argument("--epochs", type=int, default=2000)
-    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=5e-3)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--val-frac", type=float, default=0.2)

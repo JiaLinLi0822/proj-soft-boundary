@@ -16,9 +16,9 @@ def set_style():
         }
     )
 
-def _save(fig, path, dpi=500):
+def _save(fig, path, dpi=500, bbox_inches="tight"):
     stem, _ = os.path.splitext(path)
     os.makedirs(os.path.dirname(stem) or ".", exist_ok=True)
-    fig.savefig(stem + ".png", dpi=dpi, bbox_inches="tight")
-    fig.savefig(stem + ".svg", dpi=dpi, bbox_inches="tight")
+    fig.savefig(stem + ".png", dpi=dpi, bbox_inches=bbox_inches)
+    fig.savefig(stem + ".svg", dpi=dpi, bbox_inches=bbox_inches)
     plt.close(fig)

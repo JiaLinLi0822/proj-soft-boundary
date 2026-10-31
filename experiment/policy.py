@@ -115,7 +115,8 @@ def plot_psample(trials, out_path, timesteps=range(1, 11), n_bins=30, min_bin_co
             alpha=0.16,
         )
     ax.axvline(0, color="0.4", ls="--")
-    ax.set(xlabel="Cumulative Evidence", ylabel="Probability of sampling", xlim=(-4, 4.1), ylim=(-0.03, 1.03))
+    ax.set(xlabel="Cumulative evidence (log odds)", xlim=(-4, 4), xticks=[-4, -2, 0, 2, 4], ylim=(-0.03, 1.03))
+    ax.set_ylabel(r"$p(\mathrm{sample})$", math_fontfamily="stix", fontsize=14)
     colorbar = ScalarMappable(cmap=plt.cm.plasma, norm=norm)
     fig.colorbar(colorbar, ax=ax, pad=0.02).set_label("Timestep")
     fig.tight_layout()
@@ -136,6 +137,15 @@ def plot_psample_scatter(trials, out_path, max_time_step=10, point_size=5, point
     )
     norm = Normalize(1, max_time_step)
     ax.plot(highlight["cumulative_logLR"], highlight["p_sample"], color="0.35")
+    trajectory = highlight[["cumulative_logLR", "p_sample"]].to_numpy()
+    for start, end in zip(trajectory[:-1], trajectory[1:]):
+        ax.annotate(
+            "", xy=start + 0.7 * (end - start),
+            xytext=start + 0.35 * (end - start),
+            arrowprops=dict(arrowstyle="-|>", color="0.35", lw=1.0,
+                            mutation_scale=8, shrinkA=0, shrinkB=0),
+            zorder=2,
+        )
     points = ax.scatter(
         highlight["cumulative_logLR"],
         highlight["p_sample"],
@@ -143,15 +153,17 @@ def plot_psample_scatter(trials, out_path, max_time_step=10, point_size=5, point
         cmap="plasma",
         norm=norm,
         s=42,
-        edgecolors="black",
+        edgecolors="none",
+        zorder=3,
     )
-    ax.set(xlabel="Cumulative evidence", ylabel="Probability of sample", xlim=(-4, 4.1), ylim=(-0.03, 1.03))
+    ax.set(xlabel="Cumulative evidence (log odds)", xlim=(-4, 4), xticks=[-4, -2, 0, 2, 4], ylim=(-0.03, 1.03))
+    ax.set_ylabel(r"$p(\mathrm{sample})$", math_fontfamily="stix", fontsize=14)
     fig.colorbar(points, ax=ax, pad=0.02).set_label("Timestep")
     fig.tight_layout()
     _save(fig, out_path)
 
 
-def plot_sampling_variability(trials, out_path, timesteps=range(1, 11), evidence_range=4, evidence_bin_width=0.1, min_bin_count=30, title=None):
+def plot_sampling_variability(trials, out_path, timesteps=range(1, 11), evidence_range=4, evidence_bin_width=0.1, min_bin_count=10, title=None):
     timesteps = list(timesteps)
     time_ticks = np.arange(0, timesteps[-1] + 1, 2)
     centers = np.arange(-evidence_range, evidence_range + evidence_bin_width / 2, evidence_bin_width)
@@ -176,16 +188,26 @@ def plot_sampling_variability(trials, out_path, timesteps=range(1, 11), evidence
     )
 
     set_style()
-    fig, axes = plt.subplots(1, 2, figsize=(6.55, 2.55))
-    axes[0].fill_between(
-        timesteps, np.clip(mean - sem, 0, None), mean + sem,
-        color="0.75", linewidth=0, zorder=0,
+    fig = plt.figure(figsize=(3.55, 5.0), layout="constrained")
+    grid = fig.add_gridspec(3, 1, height_ratios=[1, 1, 0.055], hspace=0.20)
+    axes = [fig.add_subplot(grid[0])]
+    axes.append(fig.add_subplot(grid[1], sharex=axes[0]))
+    colorbar_ax = fig.add_subplot(grid[2])
+    axes[0].errorbar(
+        timesteps, mean, yerr=sem,
+        fmt="o", color="black", lw=2, capsize=3,
     )
-    axes[0].plot(timesteps, mean, "s--", color="black", lw=2)
+    valid = np.isfinite(mean)
+    if valid.sum() >= 2:
+        fit_x = np.asarray(timesteps)[valid]
+        slope, intercept = np.polyfit(fit_x, mean[valid], 1)
+        ax_x = np.array([fit_x.min(), fit_x.max()])
+        axes[0].plot(ax_x, intercept + slope * ax_x, color="black", lw=2, ls="--")
     axes[0].set(
-        xlabel="Timestep", ylabel="Variability of p(sample) [std]",
-        xlim=(0, timesteps[-1]), xticks=time_ticks,
+        xlabel="Time step", ylabel=r"Variability of $p(\mathrm{sample})$",
+        xlim=(0, timesteps[-1] + 0.5), xticks=time_ticks,
     )
+    axes[0].yaxis.label.set_math_fontfamily("custom")
     heatmap = axes[1].pcolormesh(
         np.r_[np.asarray(timesteps) - 0.5, timesteps[-1] + 0.5],
         edges,
@@ -193,14 +215,20 @@ def plot_sampling_variability(trials, out_path, timesteps=range(1, 11), evidence
         cmap="viridis",
     )
     axes[1].set(
-        xlabel="Timestep", ylabel="Cumulative evidence (log odds)",
-        xlim=(0, timesteps[-1] + 0.5), xticks=time_ticks,
-        ylim=(edges[0], edges[-1]),
+        xlabel="Time step", ylabel="Cumulative evidence (log odds)",
+        ylim=(-3.2, 3.2),
     )
-    for ax in axes:
-        ax.set_box_aspect(0.88)
-    fig.colorbar(heatmap, ax=axes[1]).set_label("Variability of p(sample) [std]")
+    fig.colorbar(
+        heatmap, cax=colorbar_ax, orientation="horizontal",
+        label=r"Variability of $p(\mathrm{sample})$",
+    )
+    colorbar_ax.xaxis.label.set_math_fontfamily("custom")
+    colorbar_ax.xaxis.set_ticks_position("top")
+    colorbar_ax.xaxis.set_label_position("top")
     if title:
         fig.suptitle(title)
-    fig.tight_layout()
-    _save(fig, out_path)
+    with plt.rc_context({
+        "mathtext.rm": "Times New Roman",
+        "mathtext.it": "Times New Roman:italic",
+    }):
+        _save(fig, out_path)

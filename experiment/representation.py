@@ -6,7 +6,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.cm import ScalarMappable
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
@@ -31,13 +30,17 @@ def trials_to_hidden_df(trials, cum_col="cumulative_logLR"):
 
 
 def compute_representation_noise(
-    trials, max_time_step=10, evidence_decimals=1, min_count=5,
+    trials, max_time_step=10, evidence_bin_width=0.2, min_count=10,
     cum_col="cumulative_logLR",
 ):
+    if not np.isfinite(evidence_bin_width) or evidence_bin_width <= 0:
+        raise ValueError("evidence_bin_width must be positive and finite")
     frame = trials_to_hidden_df(trials, cum_col)
     hidden_cols = [column for column in frame if column.startswith("h")]
     frame = frame[frame["time_step"] <= max_time_step].copy()
-    frame["evidence_level"] = frame[cum_col].round(evidence_decimals)
+    # Half-open bins centered on multiples of the bin width; stabilize boundary rounding.
+    bin_index = np.floor(np.round(frame[cum_col] / evidence_bin_width + 0.5, 12))
+    frame["evidence_level"] = (bin_index * evidence_bin_width).round(12)
 
     rows = []
     for (timestep, evidence), group in frame.groupby(
@@ -66,38 +69,48 @@ def compute_representation_noise(
     return noise, pd.DataFrame(summary)
 
 
-def plot_representation_noise_over_time(summary, out_path):
+def plot_representation_noise(noise, summary, out_path, evidence_bin_width=0.2):
     set_style()
-    fig, ax = plt.subplots(figsize=(3.25, 2.65))
-    x = summary["time_step"].to_numpy()
-    y = summary["variability"].to_numpy()
-    sem = summary["sem"].to_numpy()
-    ax.plot(x, y, "-o", color="black", lw=1.6, ms=4)
-    ax.fill_between(x, y - sem, y + sem, color="black", alpha=0.16)
-    ax.set(
-        xlabel="Timestep",
-        ylabel="Hidden-state variability",
-        xlim=(0, x.max()),
-        xticks=np.arange(0, int(x.max()) + 1, 2),
-    )
-    _save(fig, out_path)
-
-
-def plot_representation_noise_heatmap(noise, out_path):
-    set_style()
+    timesteps = np.arange(1, 11)
+    evidence = np.round(np.arange(-3.2, 3.2 + evidence_bin_width / 2, evidence_bin_width), 12)
     pivot = noise.pivot(
         index="evidence_level", columns="time_step", values="variability"
-    ).sort_index()
-    fig, ax = plt.subplots(figsize=(4.1, 3.1))
-    image = ax.imshow(
-        pivot.to_numpy(), aspect="auto", origin="lower",
-        interpolation="nearest", cmap="viridis",
+    ).reindex(index=evidence, columns=timesteps)
+
+    fig = plt.figure(figsize=(3.55, 5.0), layout="constrained")
+    grid = fig.add_gridspec(3, 1, height_ratios=[1, 1, 0.055], hspace=0.20)
+    top = fig.add_subplot(grid[0])
+    bottom = fig.add_subplot(grid[1], sharex=top)
+    colorbar_ax = fig.add_subplot(grid[2])
+    top.errorbar(
+        summary["time_step"], summary["variability"], yerr=summary["sem"],
+        fmt="o", color="black", lw=2, capsize=3,
     )
-    ax.set_xticks(np.arange(len(pivot.columns)), pivot.columns.astype(int))
-    ticks = np.unique(np.linspace(0, len(pivot.index) - 1, 9).round().astype(int))
-    ax.set_yticks(ticks, [f"{pivot.index[i]:.1f}" for i in ticks])
-    ax.set(xlabel="Timestep", ylabel="Cumulative evidence level")
-    fig.colorbar(image, ax=ax, pad=0.02).set_label("Hidden-state variability")
+    valid = np.isfinite(summary["variability"])
+    if valid.sum() >= 2:
+        fit_x = summary.loc[valid, "time_step"].to_numpy()
+        slope, intercept = np.polyfit(fit_x, summary.loc[valid, "variability"], 1)
+        endpoints = np.array([fit_x.min(), fit_x.max()])
+        top.plot(endpoints, intercept + slope * endpoints, "--", color="black", lw=2)
+    top.set(
+        xlabel="Time step", ylabel="Hidden-state variability",
+        xlim=(0, 10.5), xticks=np.arange(0, 11, 2),
+    )
+    image = bottom.pcolormesh(
+        np.r_[timesteps - 0.5, timesteps[-1] + 0.5],
+        np.r_[evidence - evidence_bin_width / 2, evidence[-1] + evidence_bin_width / 2],
+        pivot.to_numpy(), cmap="viridis",
+    )
+    bottom.set(
+        xlabel="Time step", ylabel="Cumulative evidence (log odds)",
+        ylim=(-3.2, 3.2),
+    )
+    fig.colorbar(
+        image, cax=colorbar_ax, orientation="horizontal",
+        label="Hidden-state variability",
+    )
+    colorbar_ax.xaxis.set_ticks_position("top")
+    colorbar_ax.xaxis.set_label_position("top")
     _save(fig, out_path)
 
 
@@ -144,15 +157,15 @@ def _plot_hidden(trials, out_path, color_column, cmap, colorbar_label, max_time_
         padding = 0.03 * max(frame["h1"].max() - frame["h1"].min(), 1e-6)
         ylim = frame["h1"].min() - padding, frame["h1"].max() + padding
     ax.set(xlim=xlim, ylim=ylim)
-    ax.set_xlabel("Hidden unit 1 activity", fontsize=16)
-    ax.set_ylabel("Hidden unit 2 activity", fontsize=16)
-    ax.tick_params(axis="both", labelsize=14)
+    ax.set_xlabel("Hidden unit 1 activity", fontsize=14)
+    ax.set_ylabel("Hidden unit 2 activity", fontsize=14)
+    ax.tick_params(axis="both", labelsize=12)
     # Lines + scatter become one embedded bitmap in SVG (axes/colorbar stay vector).
     ax.set_rasterization_zorder(2)
     
     colorbar = fig.colorbar(scatter, ax=ax, pad=0.02)
-    colorbar.set_label(colorbar_label, fontsize=16)
-    colorbar.ax.tick_params(labelsize=14)
+    colorbar.set_label(colorbar_label, fontsize=14)
+    colorbar.ax.tick_params(labelsize=12)
     _save(fig, out_path)
 
 
@@ -161,7 +174,7 @@ def plot_hidden_by_timestep(trials, out_path, cum_col="cumulative_logLR", max_ti
 
 
 def plot_hidden_by_evidence(trials, out_path, cum_col="cumulative_logLR", max_time_step=15, xlim=None, ylim=None):
-    _plot_hidden(trials, out_path, cum_col, "RdBu_r", "Cumulative evidence (LLR)", max_time_step, cum_col, xlim, ylim)
+    _plot_hidden(trials, out_path, cum_col, "RdBu_r", "Cumulative evidence (log odds)", max_time_step, cum_col, xlim, ylim)
 
 
 def plot_hidden_by_policy(
@@ -221,9 +234,9 @@ def plot_hidden_by_policy(
         rasterized=True,
     )
     ax.set(xlim=xlim, ylim=ylim)
-    ax.set_xlabel("Hidden unit 1", fontsize=16)
-    ax.set_ylabel("Hidden unit 2", fontsize=16)
-    ax.tick_params(axis="both", labelsize=14)
+    ax.set_xlabel("Hidden unit 1 activity", fontsize=14)
+    ax.set_ylabel("Hidden unit 2 activity", fontsize=14)
+    ax.tick_params(axis="both", labelsize=12)
 
     if show_trajectory:
         trial = trials[trajectory_trial_index] if trajectory_trial_index is not None else max(
@@ -237,6 +250,14 @@ def plot_hidden_by_policy(
             shape_order, ["-0.9", "-0.7", "-0.5", "-0.3", "+0.3", "+0.5", "+0.7", "+0.9"]
         ))
         ax.plot(points[:, 0], points[:, 1], color="0.4", lw=1.5, zorder=2, rasterized=True)
+        for start, end in zip(points[:-1], points[1:]):
+            ax.annotate(
+                "", xy=start + 0.7 * (end - start),
+                xytext=start + 0.35 * (end - start),
+                arrowprops=dict(arrowstyle="-|>", color="0.4", lw=1,
+                                mutation_scale=8, shrinkA=0, shrinkB=0),
+                zorder=2,
+            )
         for shape in shape_order:
             selected = shapes == shape
             if selected.any():
@@ -256,12 +277,13 @@ def plot_hidden_by_policy(
                 )
                 for shape in shape_order
             ],
-            title="Stimulus (LLR)", ncol=4, frameon=True,
+            title="Stimulus (LLR)", ncol=2, frameon=True,
             loc="lower center", bbox_to_anchor=(0.5, 0.02),
-            columnspacing=1.1, handletextpad=0.45, borderpad=0.6,
+            columnspacing=0.6, handlelength=1, handletextpad=0.3, borderpad=0.4,
+            fontsize=9, title_fontsize=10,
         )
 
-    side.text(0.5, 0.98, "Action mixture", ha="center", va="top", fontsize=11)
+    # side.text(0.5, 0.98, "Action mixture", ha="center", va="top", fontsize=11)
     triangle_ax = side.inset_axes([0.05, 0.52, 0.9, 0.38])
     height = np.sqrt(3) / 2
     triangle_x, triangle_y = np.meshgrid(
@@ -287,65 +309,4 @@ def plot_hidden_by_policy(
     triangle_ax.set(xlim=(-0.18, 1.18), ylim=(-0.15, height + 0.15))
     triangle_ax.axis("off")
     fig.subplots_adjust(left=0.12, right=0.98, bottom=0.16, top=0.97)
-    _save(fig, out_path)
-
-
-def _project_hidden(hidden_paths, projection):
-    sequences, timesteps, dimensions = hidden_paths.shape
-    if dimensions == 1:
-        return np.stack(
-            [
-                np.broadcast_to(np.arange(1, timesteps + 1), (sequences, timesteps)),
-                hidden_paths[:, :, 0],
-            ],
-            axis=-1,
-        ), "Timestep", "Hidden unit 1"
-    if projection in ("auto", "first2"):
-        return hidden_paths[:, :, :2], "Hidden unit 1", "Hidden unit 2"
-    flat = hidden_paths.reshape(-1, dimensions)
-    centered = flat - flat.mean(axis=0)
-    components = np.linalg.svd(centered, full_matrices=False)[2][:2]
-    return (centered @ components.T).reshape(sequences, timesteps, 2), "PC1", "PC2"
-
-
-def plot_permuted_evidence_trajectories(
-    hidden_paths,
-    hidden_df,
-    out_path,
-    match_timestep,
-    projection="auto",
-    line_alpha=0.42,
-):
-    paths, x_label, y_label = _project_hidden(np.asarray(hidden_paths), projection)
-    n_sequences, n_time, _ = paths.shape
-    norm = Normalize(1, n_time)
-    colors = plt.cm.viridis(norm(np.arange(1, n_time + 1)))
-    set_style()
-    fig, (hidden_ax, evidence_ax) = plt.subplots(1, 2, figsize=(7, 3.15))
-
-    for sequence_id, path in enumerate(paths):
-        hidden_ax.add_collection(
-            LineCollection(
-                np.stack([path[:-1], path[1:]], axis=1),
-                colors=colors[1:],
-                alpha=line_alpha,
-            )
-        )
-        hidden_ax.scatter(path[:, 0], path[:, 1], color=colors, s=16)
-        sequence = hidden_df[hidden_df["sequence_id"] == sequence_id]
-        evidence_ax.plot(
-            sequence["time_step"], sequence["cumulative_logLR"], alpha=line_alpha
-        )
-    matched = hidden_df[hidden_df["time_step"] == match_timestep]
-    evidence_ax.scatter(
-        matched["time_step"], matched["cumulative_logLR"], marker="s", color="black"
-    )
-    hidden_ax.set(xlabel=x_label, ylabel=y_label, title="Hidden trajectories")
-    hidden_ax.set_box_aspect(1)
-    hidden_ax.autoscale()
-    evidence_ax.axvline(match_timestep, color="black", alpha=0.35)
-    evidence_ax.set(xlabel="Time steps", ylabel="Cumulative evidence", title="Matched evidence")
-    colorbar = ScalarMappable(cmap=plt.cm.viridis, norm=norm)
-    fig.colorbar(colorbar, ax=[hidden_ax, evidence_ax], pad=0.02).set_label("Time steps")
-    fig.tight_layout()
     _save(fig, out_path)

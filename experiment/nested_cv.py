@@ -7,55 +7,15 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from checkpoints import save_checkpoint
+from checkpoints import load_policy_checkpoint, save_checkpoint
 from config import TrainConfig
 from dataset import collate_trialseq_batch, stratified_kfold
 from networks import TinyGRUPolicy
 from trainer import Trainer, evaluate
 from utils import get_device, set_seed
 
-import matplotlib
-import matplotlib.pyplot as plt
-from plotting_style import _save, set_style
-
-
 _WORKER_SEQS = None
 _WORKER_CV = None
-
-
-def plot_test_trajectory_nll_by_hidden(summary, out_path):
-
-    matplotlib.use("Agg")
-    set_style()
-    
-    hidden = np.asarray(sorted(summary["hidden_dim"].unique()))
-    groups = [summary[summary["hidden_dim"] == size] for size in hidden]
-    values = [group["test_trajectory_nll"].to_numpy() for group in groups]
-
-    fig, ax = plt.subplots(figsize=(3.2, 2.7))
-    rng = np.random.default_rng(0)
-    for size, losses in zip(hidden, values):
-        ax.scatter(
-            size + rng.uniform(-0.12, 0.12, len(losses)),
-            losses,
-            color="0.5", s=18, alpha=0.5,
-        )
-    ax.errorbar(
-        hidden,
-        [
-            np.average(losses, weights=group["test_size"])
-            for losses, group in zip(values, groups)
-        ],
-        yerr=[losses.std() for losses in values],
-        fmt="o-", color="black", capsize=3,
-    )
-    ax.set(
-        xlabel="Number of hidden units",
-        ylabel="Outer-test trajectory NLL",
-        xticks=hidden,
-    )
-    fig.tight_layout()
-    _save(fig, str(out_path))
 
 
 def _worker_init(seqs, cv):
@@ -77,11 +37,7 @@ def _run_inner(task):
         shuffle_seed=task["shuffle_seed"],
         epochs=_WORKER_CV.inner_epochs,
     )
-    return task | {
-        "state_dict": {
-            name: value.detach().cpu()
-            for name, value in out["model"].state_dict().items()
-        },
+    result = {key: value for key, value in task.items() if key not in ("train_idx", "val_idx")} | {
         "best_epoch": out["best_epoch"],
         "epochs_trained": out["epochs_trained"],
         "stopped_early": out["stopped_early"],
@@ -92,11 +48,34 @@ def _run_inner(task):
         "train_size": len(task["train_idx"]),
         "val_size": len(task["val_idx"]),
     }
+    l1 = (
+        f'{task["recurrent_l1"]:.8e}'
+        .replace(".", "p").replace("+", "P").replace("-", "m")
+    )
+    path = (
+        _WORKER_CV.base_dir / "cv_models"
+        / f'outer{task["outer_fold"]:02d}'
+        / f'h{task["hidden_dim"]}_l1_{l1}_seed{task["init_seed"]}'
+        / f'inner{task["inner_fold"]:02d}.pt'
+    )
+    save_checkpoint(
+        path,
+        task | result | {
+            "state_dict": {
+                name: value.detach().cpu()
+                for name, value in out["model"].state_dict().items()
+            },
+            "input_dim": out["model"].input_dim,
+            "num_actions": 3,
+            "diagonal_readout": _WORKER_CV.diagonal_readout,
+        },
+    )
+    return result | {"model_path": str(path)}
 
 
 class NestedCV:
     """Run nested CV for one hidden size, selecting L1 and initialization seed
-    by mean inner validation loss before each outer-fold refit.
+    by mean inner validation loss, then testing the best inner model.
     """
 
     def __init__(
@@ -145,9 +124,7 @@ class NestedCV:
             weight_decay=self.weight_decay,
             recurrent_l1_lambda=recurrent_l1,
             diagonal_readout=self.diagonal_readout,
-            early_stopping_patience=(
-                self.early_stopping_patience if val_data is not None else None
-            ),
+            early_stopping_patience=self.early_stopping_patience,
             record_history=False,
             show_progress=False,
         )
@@ -160,7 +137,7 @@ class NestedCV:
         )
         val_loader = DataLoader(
             val_data, batch_size=self.batch_size, collate_fn=collate_trialseq_batch,
-        ) if val_data is not None else None
+        )
         
         model = TinyGRUPolicy(
             input_dim=train_data[0].x.shape[1],
@@ -181,7 +158,7 @@ class NestedCV:
             ),
         ).fit()
 
-    def fit(self, data):
+    def fit(self, data, *, outer_fold=None):
 
         if self.inner_splits is None:
             inner_splits = self.outer_splits - 1
@@ -192,6 +169,8 @@ class NestedCV:
             raise ValueError("outer_splits must be >= 2")
         if inner_splits < 2:
             raise ValueError("inner_splits must be >= 2")
+        if outer_fold is not None and not 0 <= outer_fold < self.outer_splits:
+            raise ValueError("outer_fold must be between 0 and outer_splits - 1")
 
         seqs = list(data)
         input_dim = seqs[0].x.shape[1]
@@ -205,11 +184,13 @@ class NestedCV:
         ]
 
         tasks = []
-        outer_folds = stratified_kfold(
+        outer_folds = dict(enumerate(stratified_kfold(
             [seq.y[-1] for seq in seqs], self.outer_splits, self.fold_seed
-        )
+        )))
+        if outer_fold is not None:
+            outer_folds = {outer_fold: outer_folds[outer_fold]}
 
-        for outer_fold, (train_idx, test_idx) in enumerate(outer_folds):
+        for outer_fold, (train_idx, test_idx) in outer_folds.items():
             outer_seed = self.fold_seed + 1000 * outer_fold
             inner_folds = stratified_kfold(
                 [seqs[i].y[-1] for i in train_idx],
@@ -255,25 +236,6 @@ class NestedCV:
         for result in results:
             key = result["outer_fold"], result["config_key"]
             runs.setdefault(key, []).append(result)
-            l1 = (
-                f'{result["recurrent_l1"]:.8e}'
-                .replace(".", "p").replace("+", "P").replace("-", "m")
-            )
-            path = (
-                self.base_dir / "cv_models"
-                / f'outer{result["outer_fold"]:02d}'
-                / f'h{result["hidden_dim"]}_l1_{l1}_seed{result["init_seed"]}'
-                / f'inner{result["inner_fold"]:02d}.pt'
-            )
-            save_checkpoint(
-                path,
-                result
-                | {
-                    "input_dim": input_dim,
-                    "num_actions": 3,
-                    "diagonal_readout": self.diagonal_readout,
-                },
-            )
 
         pd.DataFrame([
             {
@@ -291,34 +253,24 @@ class NestedCV:
         ]).to_csv(self.base_dir / f"inner_results_h{self.hidden_dim}.csv", index=False)
 
         rows = []
-        for outer_fold, (train_idx, test_idx) in enumerate(outer_folds):
+        for outer_fold, (_, test_idx) in outer_folds.items():
             
             mean_val_loss = {key: float(np.mean([run["best_val_loss"] for run in runs[outer_fold, key]])) for key, _, _ in grid}
             best_key = min(mean_val_loss, key=mean_val_loss.get)
             _, recurrent_l1, init_seed = next(
                 config for config in grid if config[0] == best_key
             )
-            refit_epochs = max(1, round(np.mean([run["best_epoch"] for run in runs[outer_fold, best_key]])))
-            
-            train_data = [seqs[i] for i in train_idx]
+            selected = min(runs[outer_fold, best_key], key=lambda run: run["best_val_loss"])
             test_data = [seqs[i] for i in test_idx]
-            
-            refit = self._fit_model(
-                train_data, None,
-                hidden_dim=self.hidden_dim,
-                recurrent_l1=recurrent_l1,
-                seed=init_seed,
-                shuffle_seed=self.fold_seed + 1000 * outer_fold + 999,
-                epochs=refit_epochs,
-            )
-            model = refit["model"]
+
+            model, checkpoint, device = load_policy_checkpoint(selected["model_path"], self.device)
             test_metrics = evaluate(
                 model,
                 DataLoader(
                     test_data, batch_size=self.batch_size,
                     collate_fn=collate_trialseq_batch,
                 ),
-                device=get_device(self.device),
+                device=device,
             )
             path = self.base_dir / (
                 f"outer{outer_fold}_besth{self.hidden_dim}_l1_{recurrent_l1:.0e}_seed{init_seed}.pt"
@@ -340,10 +292,13 @@ class NestedCV:
                     "outer_seed": self.fold_seed + 1000 * outer_fold,
                     "outer_fold": outer_fold,
                     "mean_inner_val_loss_by_config": mean_val_loss,
-                    "refit_epochs": refit_epochs,
-                    "train_size": len(train_data),
+                    "inner_fold": selected["inner_fold"],
+                    "best_epoch": selected["best_epoch"],
+                    "train_idx": checkpoint["train_idx"],
+                    "val_idx": checkpoint["val_idx"],
+                    "train_size": selected["train_size"],
                     "test_size": len(test_data),
-                    "train_metrics": refit["final_train"],
+                    "train_metrics": selected["train_metrics"],
                     "test_metrics": test_metrics,
                 },
             )
@@ -354,12 +309,13 @@ class NestedCV:
                     "recurrent_l1": recurrent_l1,
                     "initialization_seed": init_seed,
                     "inner_val_loss": mean_val_loss[best_key],
-                    "refit_epochs": refit_epochs,
-                    "train_size": len(train_data),
+                    "inner_fold": selected["inner_fold"],
+                    "best_epoch": selected["best_epoch"],
+                    "train_size": selected["train_size"],
                     "test_size": len(test_data),
-                    "train_loss": refit["final_train"]["loss"],
-                    "train_trajectory_nll": refit["final_train"]["trajectory_nll"],
-                    "train_accuracy": refit["final_train"]["final_acc"],
+                    "train_loss": selected["train_metrics"]["loss"],
+                    "train_trajectory_nll": selected["train_metrics"]["trajectory_nll"],
+                    "train_accuracy": selected["train_metrics"]["final_acc"],
                     "test_loss": test_metrics["loss"],
                     "test_trajectory_nll": test_metrics["trajectory_nll"],
                     "test_accuracy": test_metrics["final_acc"],
@@ -370,4 +326,4 @@ class NestedCV:
         return pd.DataFrame(rows)
 
 
-__all__ = ["NestedCV", "plot_test_trajectory_nll_by_hidden"]
+__all__ = ["NestedCV"]

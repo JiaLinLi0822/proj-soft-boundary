@@ -80,7 +80,8 @@ LEG_FS = 10       # legend entry fontsize
 TITLE_FS = 12     # legend-title / panel-title fontsize
 PANEL_FS = 16     # panel letters
 
-T_CMAP = "viridis"
+# T_CMAP = "viridis"
+T_CMAP = "plasma"
 # Truncate the top of viridis: the full range ends in a pale yellow that is
 # barely visible on white, so the last time step is kept dark enough to read.
 T_CRANGE = (0.0, 0.72)

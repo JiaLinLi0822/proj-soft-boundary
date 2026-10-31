@@ -1,10 +1,10 @@
-# Experimental GRU Models and Analyses
+# Model fitting and experimental analyses for Macques data
 
 ## Overview
 
-This folder contains the experimental modeling workflow for
-[*Stochastic Decision Policy Is Optimal Under Costly Control*](https://www.biorxiv.org/content/10.64898/2026.10.06.757200v1.abstract).
-Small GRU policies are fitted to macaque choices in a sequential-sampling task.
+This folder contains the experimental modeling for
+*[Stochastic Decision Policy Is Optimal Under Costly Control](https://www.biorxiv.org/content/10.64898/2026.10.06.757200v1.abstract)*.
+Small GRU networks are fitted to macaque choices in a sequential-sampling task.
 At each timestep, the model receives one of eight shape categories and produces
 probabilities over `choose_A`, `choose_B`, and `continue`.
 
@@ -20,7 +20,7 @@ with Figures 5–8.
 | `environment.py` | Generate task stimuli for model rollouts. |
 | `networks.py`, `config.py`, `trainer.py` | GRU architecture, training configuration, optimization, and evaluation. |
 | `train_single.py` | Train one model or sweep hidden sizes using a train/validation split. |
-| `train_nested_cv.py`, `nested_cv.py` | Nested cross-validation, hyperparameter selection, outer refits, and likelihood-versus-capacity plots. |
+| `train_nested_cv.py`, `nested_cv.py` | Nested cross-validation, hyperparameter selection, outer-test evaluation, and likelihood-versus-capacity plots. |
 | `checkpoints.py` | Save/load models and plot training loss. |
 | `simulate.py` | Generate model trials and matched-evidence stimulus permutations. |
 | `analysis.py` | Generate the experimental analysis suite from one fitted checkpoint. |
@@ -59,8 +59,8 @@ For example, fit a two-unit GRU to Eli:
 
 ```bash
 python experiment/train_single.py \
-  --mat /path/to/dataE.mat --monkey-id 1 --hidden 2 \
-  --epochs 500 --lr 1e-3 --batch-size 128 --val-frac 0.2 \
+  --mat experiment/data/dataE.mat --monkey-id 1 --hidden 2 \
+  --epochs 2000 --lr 1e-3 --batch-size 128 --val-frac 0.2 \
   --seed 30 --device cpu --recurrent-l1-lambda 1e-5 \
   --outdir experiment/runs/single
 ```
@@ -83,17 +83,26 @@ python experiment/train_nested_cv.py \
   --mat /path/to/dataE.mat --monkey-id 1 \
   --hidden 1 2 3 4 5 10 20 \
   --recurrent-l1-lambda 1e-1 1e-2 1e-3 1e-4 1e-5 \
-  --init-seeds 0 1 2 --outer-folds 10 --inner-epochs 1000 \
+  --init-seeds 0 1 2 --outer-folds 10 --inner-epochs 2000 \
   --batch-size 128 --lr 3e-3 --early-stopping-patience 200 \
   --seed 0 --device cpu --num-workers 0 \
   --outdir experiment/runs/nested_cv
 ```
 
 Each hidden size runs a separate nested CV. Inner folds select recurrent L1
-strength and initialization seed by mean validation loss. The selected model
-is refitted on all outer-training data before evaluation on the outer test set.
+strength and initialization seed by mean validation loss. Among the inner models
+for the winning configuration, the one with the lowest validation loss is
+evaluated directly on the outer test set. Its weights come from its best
+validation epoch, and its training data consists only of that inner training fold.
 By default, the number of inner folds is `outer-folds - 1`; use `--inner-folds`
 to override it. Set `--num-workers` above 1 to parallelize inner fits on CPU.
+Use `--outer-fold 0` (zero-based) to run only one outer fold while preserving
+the full run's splits and seeds. Single-fold runs write a summary but skip
+the capacity plot, which requires combining outer-fold results.
+Each worker saves its checkpoint as soon as its fit completes and returns only
+the path, metrics, and run metadata. Outer evaluation loads the selected checkpoint
+from disk. Completed checkpoints remain available if a later fit fails; existing
+checkpoints are not automatically skipped when restarting a run.
 
 Each timestamped `MonkeyE` or `MonkeyJ` run directory contains:
 
@@ -101,9 +110,12 @@ Each timestamped `MonkeyE` or `MonkeyJ` run directory contains:
 | --- | --- |
 | `cv_models/outer*/h*/inner*.pt` | Individual inner-fold checkpoints. |
 | `inner_results_hH.csv` | Inner-fit scores and selected training epochs for each hidden size. |
-| `outerN_besthH_l1_*_seed*.pt` | Selected, refitted outer-fold models. |
+| `outerN_besthH_l1_*_seed*.pt` | Selected inner models with outer-test metrics. |
 | `summary.csv` | Outer-fold configuration and held-out performance. |
 | `test_trajectory_nll_vs_hidden.png`, `.svg` | Model capacity versus held-out trajectory negative log-likelihood. |
+
+Outer checkpoints and summary rows record the selected `inner_fold`,
+`best_epoch`, and actual inner-model `train_size`.
 
 For each outer fold, trajectory NLL is averaged across trials after summing
 action NLL over all timesteps in each trial. The plotted mean weights folds by
@@ -111,12 +123,7 @@ their test-set sizes; error bars show the standard deviation across folds.
 
 ### Cluster execution
 
-`train_nested_cv.sbatch` is a cluster-specific example. Before submitting, edit
-its account, module, Python path, email, resource settings, and data location.
-The script currently relies on the default `neuralSPRT/data/` path; add an
-explicit `--mat /path/to/dataE.mat` argument to its Python command if needed.
-It launches `train_nested_cv.py` relative to the submission directory, so submit
-from `experiment/`:
+To train the model on batch, use `train_nested_cv.sbatch`:
 
 ```bash
 cd experiment
@@ -124,13 +131,39 @@ mkdir -p cluster
 sbatch train_nested_cv.sbatch
 ```
 
-The array distributes hidden sizes across jobs. Its supplied epoch count is
-2,000, whereas the CLI example above uses 1,000; align settings when comparing
-runs. Return to the repository root for the analysis commands below.
+The array contains 70 tasks, one per `(hidden size, outer fold)`. Tasks 0–9
+run the ten outer folds for H=1, tasks 10–19 for H=2, and tasks 60–69 for H=20.
+Each task trains 135 inner models with the default grid, using up to 32 workers,
+and requests 32 CPUs and 32 GB. There is no array concurrency cap: all 70 tasks
+may run simultaneously (up to 2,240 simultaneous fits), subject to cluster
+availability and account limits.
+Changing `OUTER_FOLDS` requires updating the submitted array range to
+`0` through `7 * OUTER_FOLDS - 1`.
+
+Task outputs are isolated under
+`runs/nested_cv/slurm_JOBID/hH/outerF/MonkeyE/nestedcv_TIMESTAMP_seedS/`
+(or `MonkeyJ`). Each task writes one row to its own `summary.csv`, plus its
+inner checkpoints, inner-results CSV, and selected outer model. The 70 summaries
+are not automatically merged; combine them after all tasks finish to generate
+the capacity plot. The total remains 9,450 trained models per monkey.
 
 ## Reproduce the Experimental Analyses and Figures
 
-After fitting, supply a checkpoint and its matching monkey data:
+By default, analyze both monkeys using the h=2 checkpoint with the lowest
+outer-test trajectory NLL for each monkey:
+
+```bash
+python experiment/analysis.py --device cpu
+```
+
+The script searches `experiment/runs/nested_cv/slurm_*/h2/`, keeps the latest
+rerun of each fold, and uses `experiment/data/dataE.mat` and `dataJ.mat`.
+Use `--monkey-id 1` or `--monkey-id 2` to analyze only one monkey. The selected
+checkpoint, selection criterion, and test NLL are recorded in `analysis_summary.json`.
+This minimum-test-NLL selection is for illustrative analyses, rather than an
+unbiased estimate of generalization performance.
+
+To analyze a specific checkpoint, supply it and its matching monkey data:
 
 ```bash
 python experiment/analysis.py \
@@ -159,8 +192,7 @@ of model rollouts, and exports the following PNG/SVG pairs under
 | `psample_variability` | Sampling-probability variability across matched evidence and timestep bins. |
 | `hidden_by_timestep`, `hidden_by_evidence` | Hidden-state trajectories colored by time or evidence. |
 | `hidden_by_policy` | Action probabilities represented in two-dimensional hidden space. |
-| `representation_noise_over_time` | Hidden-state variability over time at matched evidence. |
-| `representation_noise_heatmap` | Hidden-state variability by timestep and evidence level. |
+| `representation_noise` | Vertically stacked hidden-state variability time course and evidence heatmap, with a horizontal colorbar. |
 
 `analysis_summary.json` records checkpoint, data, subject, and rollout settings.
 Two-dimensional hidden-state plots are skipped for one-unit models. For models
@@ -173,34 +205,6 @@ by nested CV, not `analysis.py`. Use the original data, selected checkpoints,
 and matching settings for numerical reproduction of the preprint. Binning,
 minimum counts, axis limits, and styling are set in `analysis.py` and its plotting
 functions; CLI options are listed by `python experiment/analysis.py --help`.
-
-### Matched-evidence permutations
-
-This additional analysis is exposed through Python functions rather than the
-analysis CLI. From the repository root, start Python and run:
-
-```python
-import sys
-sys.path.insert(0, "experiment")
-from checkpoints import load_policy_checkpoint
-from simulate import simulate_permuted_evidence
-from representation import plot_permuted_evidence_trajectories
-
-model, _, _ = load_policy_checkpoint("/path/to/model.pt", "cpu")
-result = simulate_permuted_evidence(
-    model, monkey_id=1, rollout_seed=45, permutation_seed=0,
-    shape_ids=[4, 6, 8], match_timestep=3,
-)
-plot_permuted_evidence_trajectories(
-    result["hidden_paths"], result["hidden_df"],
-    out_path="experiment/results/permuted_evidence_hidden_trajectories",
-    match_timestep=3,
-)
-```
-
-The permutations preserve the set of cues, hence their cumulative evidence at
-the matched timestep, while changing cue order. The function exports PNG/SVG
-trajectories; replace the example sequence with the desired stimulus sequence.
 
 ## Citation
 

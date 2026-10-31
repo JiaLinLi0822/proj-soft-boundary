@@ -8,7 +8,8 @@ from pathlib import Path
 import pandas as pd
 
 from dataset import KiraDataset
-from nested_cv import NestedCV, plot_test_trajectory_nll_by_hidden
+from nested_cv import NestedCV
+from plot_nested_cv import plot_test_trajectory_nll_by_hidden
 
 
 def main():
@@ -23,6 +24,7 @@ def main():
     
     #nested cross validation
     parser.add_argument("--outer-folds", type=int, default=10)
+    parser.add_argument("--outer-fold", type=int, help="Run only this outer fold (zero-based).")
     parser.add_argument("--inner-folds", type=int)
     parser.add_argument("--inner-epochs", type=int, default=1000)
 
@@ -40,10 +42,12 @@ def main():
     parser.add_argument("--last-accum-override", type=float)
     parser.add_argument("--outdir", default="runs/nested_cv")
     args = parser.parse_args()
+    if args.outer_fold is not None and not 0 <= args.outer_fold < args.outer_folds:
+        parser.error("--outer-fold must be between 0 and --outer-folds - 1")
 
     project_dir = Path(__file__).resolve().parent.parent
     data_path = Path(args.mat) if args.mat else (
-        project_dir / "neuralSPRT" / "data" /
+        project_dir / "experiment" / "data" /
         ("dataJ.mat" if args.monkey_id == 2 else "dataE.mat")
     )
     dataset = KiraDataset(
@@ -77,7 +81,7 @@ def main():
             weight_decay=args.weight_decay,
             diagonal_readout=args.diagonal_readout,
             early_stopping_patience=args.early_stopping_patience,
-        ).fit(dataset))
+        ).fit(dataset, outer_fold=args.outer_fold))
     summary = pd.concat(summaries, ignore_index=True)
 
     metadata = {
@@ -95,9 +99,10 @@ def main():
         summary[name] = value
     summary = summary[list(metadata) + [c for c in summary if c not in metadata]]
     summary.to_csv(outdir / "summary.csv", index=False)
-    plot_test_trajectory_nll_by_hidden(
-        summary, outdir / "test_trajectory_nll_vs_hidden"
-    )
+    if args.outer_fold is None:
+        plot_test_trajectory_nll_by_hidden(
+            summary, outdir / "test_trajectory_nll_vs_hidden"
+        )
     print(f"\n{summary.to_string(index=False)}")
     print(f"\nWrote nested-CV results to: {outdir}")
 
