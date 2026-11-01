@@ -96,13 +96,9 @@ evaluated directly on the outer test set. Its weights come from its best
 validation epoch, and its training data consists only of that inner training fold.
 By default, the number of inner folds is `outer-folds - 1`; use `--inner-folds`
 to override it. Set `--num-workers` above 1 to parallelize inner fits on CPU.
-Use `--outer-fold 0` (zero-based) to run only one outer fold while preserving
-the full run's splits and seeds. Single-fold runs write a summary but skip
+Use `--outer-fold 0` (zero-based) to run only one outer fold while preserving  
+the full run's splits and seeds. Single-fold runs write a summary but skip  
 the capacity plot, which requires combining outer-fold results.
-Each worker saves its checkpoint as soon as its fit completes and returns only
-the path, metrics, and run metadata. Outer evaluation loads the selected checkpoint
-from disk. Completed checkpoints remain available if a later fit fails; existing
-checkpoints are not automatically skipped when restarting a run.
 
 Each timestamped `MonkeyE` or `MonkeyJ` run directory contains:
 
@@ -131,21 +127,17 @@ mkdir -p cluster
 sbatch train_nested_cv.sbatch
 ```
 
-The array contains 70 tasks, one per `(hidden size, outer fold)`. Tasks 0–9
-run the ten outer folds for H=1, tasks 10–19 for H=2, and tasks 60–69 for H=20.
-Each task trains 135 inner models with the default grid, using up to 32 workers,
-and requests 32 CPUs and 32 GB. There is no array concurrency cap: all 70 tasks
-may run simultaneously (up to 2,240 simultaneous fits), subject to cluster
+The array contains 70 tasks in parallel, one per `(hidden size, outer fold)`. Tasks 0–9  
+run the ten outer folds for H=1, tasks 10–19 for H=2, and tasks 60–69 for H=20.  
+Each task trains 135 inner models with the default grid, using up to 32 workers,  
+and requests 32 CPUs and 32 GB. There is no array concurrency cap: all 70 tasks  
+may run simultaneously (up to 2,240 simultaneous fits), subject to cluster  
 availability and account limits.
-Changing `OUTER_FOLDS` requires updating the submitted array range to
-`0` through `7 * OUTER_FOLDS - 1`.
 
 Task outputs are isolated under
 `runs/nested_cv/slurm_JOBID/hH/outerF/MonkeyE/nestedcv_TIMESTAMP_seedS/`
-(or `MonkeyJ`). Each task writes one row to its own `summary.csv`, plus its
-inner checkpoints, inner-results CSV, and selected outer model. The 70 summaries
-are not automatically merged; combine them after all tasks finish to generate
-the capacity plot. The total remains 9,450 trained models per monkey.
+(or `MonkeyJ`). Each task writes one row to its own `summary.csv`, plus its  
+inner checkpoints, inner-results CSV, and selected outer model. The total remains 9,450 trained models per monkey.
 
 ## Reproduce the Experimental Analyses and Figures
 
@@ -184,14 +176,12 @@ of model rollouts, and exports the following PNG/SVG pairs under
 
 | Output stem | Analysis |
 | --- | --- |
-| `behavior`, `behavior2` | Alternate layouts of shape-count distributions, psychometric curves, subjective shape weights, and decision thresholds. |
+| `behavior` | Distribution for number of shapes used, psychometric curves, subjective shape weights, and decision thresholds. |
 | `monkey_decision_threshold_distribution` | Monkey evidence distributions for sampling and commitment across timesteps. |
-| `monkey_decision_threshold_distribution_legend` | Separate legend for the threshold-distribution plot. |
 | `psample` | Mean sampling probability versus cumulative evidence, grouped by timestep. |
 | `psample_scatter` | Individual sampling probabilities with a highlighted trial. |
 | `psample_variability` | Sampling-probability variability across matched evidence and timestep bins. |
-| `hidden_by_timestep`, `hidden_by_evidence` | Hidden-state trajectories colored by time or evidence. |
-| `hidden_by_policy` | Action probabilities represented in two-dimensional hidden space. |
+| `hidden_by_timestep`, `hidden_by_evidence`, `hidden_by_policy`  | Hidden-state trajectories colored by time step, evidence and policy. |
 | `representation_noise` | Vertically stacked hidden-state variability time course and evidence heatmap, with a horizontal colorbar. |
 
 `analysis_summary.json` records checkpoint, data, subject, and rollout settings.
